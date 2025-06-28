@@ -1,36 +1,30 @@
 package state
 
 import (
-	"net/http"
-
-	"github.com/gin-gonic/gin"
+	privHandlers "server/state/privHandlers"
+	pubHandlers "server/state/pubHandlers"
 )
 
 func (s *State) registerPublicRoutes() {
-	s.Router.GET("/public/ping", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "public ping",
-		})
-	})
+	// /public/* group
+	{
+		public := s.Router.Group("/public")
 
+		// /public/ping
+		public.GET("/ping", pubHandlers.Ping)
+	}
 }
 
 func (s *State) registerPrivateRoutes() {
+	// /admin/* group
 	{
 		admin := s.Router.Group("/admin")
-		admin.GET("/ping", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{
-				"message": "admin ping",
-			})
-
-		})
-
+		// /admin/ping group
+		admin.GET("/ping", privHandlers.AdminPing)
+		// /admin/pong group
+		admin.GET("/pong", privHandlers.AdminPong)
 	}
 
-	s.Router.GET("/ping", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "private ping",
-		})
-	})
-
+	// /ping
+	s.Router.GET("/ping", privHandlers.Ping)
 }

@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func PGConnect() (*pgxpool.Pool, error) {
+func Connect() (*pgxpool.Pool, error) {
 	port := os.Getenv("POSTGRES_PORT")
 	if len(port) == 0 {
 		port = "5434"

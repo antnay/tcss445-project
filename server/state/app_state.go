@@ -28,10 +28,10 @@ func (s *State) registerRoutes() {
 }
 
 func (s *State) addPool() {
-	pool, err := db.PGConnect()
+	pool, err := db.Connect()
 	if err != nil {
 		log.Printf("Failed to connect to database: %v\n", err)
-		log.Println("DATABASE IS NOT ACTIVE, THINGS WILL BREAK")
+		log.Println("\033[31m\033[\033[4mDATABASE IS NOT ACTIVE, THINGS WILL BREAK\033[0m")
 	}
 	s.Pool = pool
 }
