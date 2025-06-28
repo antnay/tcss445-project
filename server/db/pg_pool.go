@@ -56,6 +56,6 @@ func Connect() (*pgxpool.Pool, error) {
 		return nil, err
 	}
 
-	log.Printf("Connected to postgres on port %s", port)
+	log.Printf("\033[32mConnected to postgres on port %s\033[0m\n", port)
 	return pool, nil
 }

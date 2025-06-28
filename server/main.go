@@ -8,14 +8,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"server/state"
+	"server/router"
 	"syscall"
 	"time"
 )
 
 func main() {
-	state := state.NewServer()
-	defer state.PGClose()
+	r := router.NewRouter()
+	defer r.PGClose()
 
 	port := os.Getenv("SERVER_PORT")
 	if len(port) == 0 {
@@ -24,7 +24,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%s", port),
-		Handler: state.Router,
+		Handler: r.Router,
 	}
 
 	go func() {
