@@ -1,0 +1,36 @@
+# Air configuration for hot reloading
+root = "."
+tmp_dir = "tmp"
+
+[build]
+# Build command
+cmd = "go build -o ./tmp/app ."
+# Binary file
+bin = "tmp/app"
+# Full path to binary
+full_bin = "./tmp/app"
+# Include file extensions to watch
+include_ext = ["go"]
+# Exclude directories
+exclude_dir = ["assets", "tmp", "vendor"]
+# Log file
+log = "air.log"
+# Delay in ms between file changes detection
+delay = 500
+# Stop on error
+stop_on_error = true
+
+[log]
+# Show log time
+time = true
+
+[color]
+# Customize each part's color
+main = "magenta"
+watcher = "cyan"
+build = "yellow"
+runner = "green"
+
+[misc]
+# Delete tmp directory on exit
+clean_on_exit = true
