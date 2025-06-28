@@ -2,17 +2,22 @@ services:
   client:
     build:
       context: ./
-      dockerfile: client/Dockerfile
+      dockerfile: ./client/Dockerfile
     ports:
       - "5173:5173"
     depends_on:
       server:
         condition: service_started
     volumes:
-      - ./client/src:/react-app/src
+      - ./client/app:/react-app/app
+      - /react-app/node_modules
+    env_file:
+      - .env
     environment:
       - CHOKIDAR_USEPOLLING=true
       - VITE_HOST=0.0.0.0
+      - NODE_ENV=development
+
 
   server:
     build:
