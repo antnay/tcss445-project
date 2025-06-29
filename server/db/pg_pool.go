@@ -15,7 +15,7 @@ func Connect() (*pgxpool.Pool, error) {
 	if len(port) == 0 {
 		port = "5434"
 	}
-	uri := os.Getenv("POSTGRES_URI")
+	uri := os.Getenv("POSTGRES_URL")
 	if len(uri) == 0 {
 
 		user := os.Getenv("POSTGRES_USER")
@@ -28,11 +28,11 @@ func Connect() (*pgxpool.Pool, error) {
 		}
 		host := os.Getenv("POSTGRES_HOST")
 		if len(host) == 0 {
-			host = "pg-db"
+			host = ""
 		}
 		db := os.Getenv("POSTGRES_DB")
 		if len(db) == 0 {
-			db = "typesheet"
+			db = ""
 		}
 		uri = fmt.Sprintf("postgresql://%s:%s@%s:%s/%s", user, password, host, port, db)
 	}

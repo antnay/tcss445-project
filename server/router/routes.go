@@ -8,9 +8,10 @@ import (
 
 func (r *Router) registerAdminRoutes() {
 	adminHandler := adminHandlers.NewHandler(r.pool)
+	api := r.Router.Group("/api")
 
 	// /admin/* group
-	admin := r.Router.Group("/admin")
+	admin := api.Group("/admin")
 
 	admin.GET("/ping", adminHandler.AdminPing)  // /admin/ping group
 	admin.POST("/pong", adminHandler.AdminPong) // /admin/pong group
@@ -18,23 +19,23 @@ func (r *Router) registerAdminRoutes() {
 
 func (r *Router) registerPrivateRoutes() {
 	privateHandler := privateHandlers.NewHandler(r.pool)
+	api := r.Router.Group("/api")
 	// /ping
-	r.Router.GET("/ping", privateHandler.Ping)
+	api.GET("/ping", privateHandler.Ping)
 	{
-		group := r.Router.Group("/group")
+		group := api.Group("/group")
 		group.GET("/one", privateHandler.Ping)
 	}
 
 	// path parameter example
-	r.Router.GET("/hello/:name/:number", privateHandler.PathParamEx)
+	api.GET("/hello/:name/:number", privateHandler.PathParamEx)
 	// query parameters
-	r.Router.GET("/hello", privateHandler.QueryParamEx)
+	api.GET("/hello", privateHandler.QueryParamEx)
 
 }
 func (r *Router) registerPublicRoutes() {
 	publicHandler := publicHandlers.NewHandler(r.pool)
-	// /public/* group
-	public := r.Router.Group("/public")
+	api := r.Router.Group("/api/public")
 
-	public.GET("/ping", publicHandler.Ping) // /public/ping
+	api.GET("/ping", publicHandler.Ping) // /public/ping
 }

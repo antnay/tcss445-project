@@ -3,6 +3,7 @@ package router
 import (
 	"log"
 	"server/db"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,6 +18,13 @@ func NewRouter() *Router {
 	s := &Router{
 		Router: gin.Default(),
 	}
+
+	s.Router.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"status":    "ok",
+			"timestamp": time.Now().Unix(),
+		})
+	})
 
 	s.connectToDatabase()
 	s.registerRoutes()
