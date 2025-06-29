@@ -28,11 +28,11 @@ func Connect() (*pgxpool.Pool, error) {
 		}
 		host := os.Getenv("POSTGRES_HOST")
 		if len(host) == 0 {
-			host = ""
+			host = "postgres"
 		}
 		db := os.Getenv("POSTGRES_DB")
 		if len(db) == 0 {
-			db = ""
+			db = "postgres"
 		}
 		uri = fmt.Sprintf("postgresql://%s:%s@%s:%s/%s", user, password, host, port, db)
 	}
