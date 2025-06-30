@@ -11,12 +11,14 @@ import (
 )
 
 func Connect() (*pgxpool.Pool, error) {
+
 	port := os.Getenv("POSTGRES_PORT")
 	if len(port) == 0 {
-		port = "5434"
+		port = "5432"
 	}
 	uri := os.Getenv("POSTGRES_URL")
 	if len(uri) == 0 {
+		log.Println("Using parts to construct db uri")
 
 		user := os.Getenv("POSTGRES_USER")
 		if len(user) == 0 {
@@ -35,6 +37,8 @@ func Connect() (*pgxpool.Pool, error) {
 			db = "postgres"
 		}
 		uri = fmt.Sprintf("postgresql://%s:%s@%s:%s/%s", user, password, host, port, db)
+	} else {
+		log.Println("Using POSTGRES_URL")
 	}
 
 	log.Println("uri: ", uri)

@@ -13,18 +13,17 @@ func (r *Router) registerAdminRoutes() {
 	// /admin/* group
 	admin := api.Group("/admin")
 
-	admin.GET("/ping", adminHandler.AdminPing)  // /admin/ping group
-	admin.POST("/pong", adminHandler.AdminPong) // /admin/pong group
+	admin.GET("/ping", adminHandler.AdminPing)  // api/admin/ping group
+	admin.POST("/pong", adminHandler.AdminPong) // api/admin/pong group
 }
 
 func (r *Router) registerPrivateRoutes() {
 	privateHandler := privateHandlers.NewHandler(r.pool)
 	api := r.Router.Group("/api")
-	// /ping
+	// api/ping
 	api.GET("/ping", privateHandler.Ping)
 	{
-		group := api.Group("/group")
-		group.GET("/one", privateHandler.Ping)
+		// group := api.Group("/user")
 	}
 
 	// path parameter example
@@ -33,9 +32,12 @@ func (r *Router) registerPrivateRoutes() {
 	api.GET("/hello", privateHandler.QueryParamEx)
 
 }
+
 func (r *Router) registerPublicRoutes() {
 	publicHandler := publicHandlers.NewHandler(r.pool)
 	api := r.Router.Group("/api/public")
 
-	api.GET("/ping", publicHandler.Ping) // /public/ping
+	api.GET("/ping", publicHandler.Ping) // api/public/ping
+	api.POST("/register", publicHandler.Register)
+	api.POST("/login", publicHandler.Login)
 }
