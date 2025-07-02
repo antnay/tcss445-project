@@ -116,6 +116,7 @@ func (h *Handler) checkUserExists(c *gin.Context, req *RegisterRequest) *utils.A
 	} else if usernameExists {
 		return utils.NewConflictError("username already exists")
 	}
+	return nil
 }
 
 func (h *Handler) createUser(req *RegisterRequest, passwordHash string) *utils.AppError {
