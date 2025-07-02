@@ -2,6 +2,7 @@ package router
 
 import (
 	adminHandlers "server/handlers/admin"
+	authHandlers "server/handlers/auth"
 	privateHandlers "server/handlers/private"
 	publicHandlers "server/handlers/public"
 )
@@ -35,9 +36,10 @@ func (r *Router) registerPrivateRoutes() {
 
 func (r *Router) registerPublicRoutes() {
 	publicHandler := publicHandlers.NewHandler(r.pool)
+	authHandler := authHandlers.NewHandler(r.pool, r.tokenFactory)
 	api := r.Router.Group("/api/public")
 
 	api.GET("/ping", publicHandler.Ping) // api/public/ping
-	api.POST("/register", publicHandler.Register)
-	api.POST("/login", publicHandler.Login)
+	api.POST("/register", authHandler.Register)
+	api.POST("/login", authHandler.Login)
 }

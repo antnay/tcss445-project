@@ -3,6 +3,7 @@ package router
 import (
 	"log"
 	"server/db"
+	"server/utils"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -10,8 +11,9 @@ import (
 )
 
 type Router struct {
-	Router *gin.Engine
-	pool   *pgxpool.Pool
+	Router       *gin.Engine
+	pool         *pgxpool.Pool
+	tokenFactory *utils.TokenFactory
 }
 
 func NewRouter() *Router {
