@@ -47,15 +47,15 @@ func (h *Handler) Register(c *gin.Context) {
 		return
 	}
 
-	appError := validateRegistrationForm(&req)
-	if appError != nil {
-		c.Error(appError)
+	appE := validateRegistrationForm(&req)
+	if appE != nil {
+		c.Error(appE)
 		return
 	}
 
-	appError = h.checkUserExists(c, &req)
-	if appError != nil {
-		c.Error(appError)
+	appE = h.checkUserExists(c, &req)
+	if appE != nil {
+		c.Error(appE)
 		return
 	}
 
@@ -66,20 +66,27 @@ func (h *Handler) Register(c *gin.Context) {
 		return
 	}
 
-	appError = h.createUser(&req, passwordHash)
-	if appError != nil {
-		c.Error(appError)
+	appE = h.createUser(&req, passwordHash)
+	if appE != nil {
+		c.Error(appE)
 		return
 	}
 
-	appError = h.setAccessCookie(c, &req)
-	if appError != nil {
-		c.Error(appError)
+	access_token, appE := h.getAccessToken(req.Username)
+	if appE != nil {
+		c.Error(appE)
 		return
 	}
+
+	// appE = h.setAccessCookie(c, req.Username)
+	// if appE != nil {
+	// 	c.Error(appE)
+	// 	return
+	// }
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": fmt.Sprintf("registered %s", req.Username),
+		"message":      fmt.Sprintf("registered %s", req.Username),
+		"access_token": access_token,
 	})
 }
 
@@ -157,9 +164,9 @@ func (h *Handler) createUser(req *RegisterRequest, passwordHash string) *utils.A
 	return nil
 }
 
-func (h *Handler) setAccessCookie(c *gin.Context, req *RegisterRequest) *utils.AppError {
+func (h *Handler) setAccessCookie(c *gin.Context, username string) *utils.AppError {
 	curTime := time.Now()
-	accessToken, err := h.tokenFactory.CreateAccessToken(req.Username, "user", curTime)
+	accessToken, err := h.tokenFactory.CreateAccessToken(username, "user", curTime)
 	if err != nil {
 		log.Printf("Failed sign access token: %s", err)
 		return utils.NewInternalError()
@@ -168,4 +175,14 @@ func (h *Handler) setAccessCookie(c *gin.Context, req *RegisterRequest) *utils.A
 	c.SetSameSite(http.SameSiteDefaultMode)
 	c.SetCookie("access_token", accessToken, EIGHT_HOUR, "/", "localhost", true, true)
 	return nil
+}
+
+func (h *Handler) getAccessToken(username string) (string, *utils.AppError) {
+	curTime := time.Now()
+	accessToken, err := h.tokenFactory.CreateAccessToken(username, "user", curTime)
+	if err != nil {
+		log.Printf("Failed sign access token: %s", err)
+		return accessToken, utils.NewInternalError()
+	}
+	return accessToken, nil
 }
