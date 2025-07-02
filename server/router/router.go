@@ -2,6 +2,7 @@ package router
 
 import (
 	"log"
+	"net/http"
 	"server/db"
 	"server/utils"
 	"time"
@@ -16,10 +17,33 @@ type Router struct {
 	tokenFactory *utils.TokenFactory
 }
 
+func ErrorHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+		if len(c.Errors) > 0 {
+			err := c.Errors.Last().Err
+			switch e := err.(type) {
+
+			case *utils.AppError:
+				c.JSON(e.Status, gin.H{
+					"message": e.Message,
+				})
+
+			default:
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"message": "internal server error",
+				})
+			}
+			return
+		}
+	}
+}
+
 func NewRouter() *Router {
 	s := &Router{
 		Router: gin.Default(),
 	}
+	s.Router.Use(ErrorHandler())
 
 	s.Router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{

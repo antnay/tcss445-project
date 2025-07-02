@@ -27,6 +27,12 @@ type AuthError struct {
 	Err     error
 }
 
+type RegisterRequest struct {
+	Email    string `form:"email" binding:"required,email"`
+	Username string `form:"username" binding:"required,username"`
+	Password string `form:"password" binding:"required,password"`
+}
+
 func NewHandler(pool *pgxpool.Pool, tokenFactory *utils.TokenFactory) *Handler {
 	return &Handler{
 		pool:         pool,
@@ -35,78 +41,88 @@ func NewHandler(pool *pgxpool.Pool, tokenFactory *utils.TokenFactory) *Handler {
 }
 
 func (h *Handler) Register(c *gin.Context) {
-	emailForm := c.PostForm("email")
-	usernameForm := c.PostForm("username")
-	passwordForm := c.PostForm("password")
+	var req RegisterRequest
+	if err := c.ShouldBind(&req); err != nil {
+		c.Error(utils.NewValidationError(err.Error()))
+		return
+	}
 
-	if len(emailForm) == 0 {
+	appError := validateRegistrationForm(&req)
+	if appError != nil {
+		c.Error(appError)
+		return
+	}
+
+	appError = h.checkUserExists(c, &req)
+	if appError != nil {
+		c.Error(appError)
+		return
+	}
+
+	passwordHash, err := utils.HashPassword(req.Password)
+	if err != nil {
+		log.Printf("Failed to hash password: %s", err)
+		c.Error(utils.NewInternalError())
+		return
+	}
+
+	appError = h.createUser(&req, passwordHash)
+	if appError != nil {
+		c.Error(appError)
+		return
+	}
+
+	appError = h.setAccessCookie(c, &req)
+	if appError != nil {
+		c.Error(appError)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": fmt.Sprintf("registered %s", req.Username),
+	})
+}
+
+func (h *Handler) Login(c *gin.Context) {
+}
+
+func validateRegistrationForm(req *RegisterRequest) *utils.AppError {
+	if len(req.Email) == 0 {
 		log.Println("Missing email")
-		return AuthError{Code: http.StatusBadRequest, Message: "Missing email", Err: nil}.
-		// c.JSON(http.StatusBadRequest, gin.H{
-		// 	"message": "missing email",
-		// })
-		// return
-
-	}
-	if len(usernameForm) == 0 {
+		return utils.NewValidationError("missing email")
+	} else if len(req.Username) == 0 {
 		log.Println("Missing username")
-		c.JSON(http.StatusBadRequest, gin.H{
-			"message": "missing username",
-		})
-		return
-	}
-	if len(passwordForm) == 0 {
+		return utils.NewValidationError("missing username")
+	} else if len(req.Password) == 0 {
 		log.Println("Missing password")
-		c.JSON(http.StatusBadRequest, gin.H{
-			"message": "missing password",
-		})
-		return
+		return utils.NewValidationError("missing password")
 	}
+	return nil
+}
 
+func (h *Handler) checkUserExists(c *gin.Context, req *RegisterRequest) *utils.AppError {
 	var emailExists, usernameExists bool
 	err := h.pool.QueryRow(context.Background(),
 		`SELECT 
         EXISTS(SELECT 1 FROM users WHERE email = $1) as email_exists,
         EXISTS(SELECT 1 FROM users WHERE username = $2) as username_exists`,
-		emailForm, usernameForm).Scan(&emailExists, &usernameExists)
+		req.Email, req.Username).Scan(&emailExists, &usernameExists)
 
 	if err != nil {
 		log.Printf("failed to check existence: %s\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "internal server error",
-		})
-		return
+		return utils.NewInternalError()
+	} else if emailExists {
+		return utils.NewConflictError("email already exists")
+	} else if usernameExists {
+		return utils.NewConflictError("username already exists")
 	}
+}
 
-	if emailExists {
-		c.JSON(http.StatusConflict, gin.H{
-			"message": "email already exists",
-		})
-		return
-	}
-	if usernameExists {
-		c.JSON(http.StatusConflict, gin.H{
-			"message": "user already exists",
-		})
-		return
-	}
-
-	passwordHash, err := utils.HashPassword(passwordForm)
-	if err != nil {
-		log.Printf("Failed to hash password: %s", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "internal server error",
-		})
-		return
-	}
-
+func (h *Handler) createUser(req *RegisterRequest, passwordHash string) *utils.AppError {
 	tx, err := h.pool.Begin(context.Background())
 	if err != nil {
 		log.Printf("Unable to start transaction: %s", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "internal server error",
-		})
-		return
+		return utils.NewInternalError()
 	}
 	defer tx.Rollback(context.Background())
 
@@ -116,14 +132,11 @@ func (h *Handler) Register(c *gin.Context) {
 		VALUES ($1, $2)
 		RETURNING id
 		`,
-		usernameForm, emailForm).Scan(&userId)
+		req.Username, req.Email).Scan(&userId)
 
 	if err != nil {
 		log.Printf("Insert user failed: %s", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "internal server error",
-		})
-		return
+		return utils.NewInternalError()
 	}
 
 	_, err = tx.Exec(context.Background(),
@@ -133,51 +146,25 @@ func (h *Handler) Register(c *gin.Context) {
 		userId, passwordHash)
 	if err != nil {
 		log.Printf("Insert password_login failed: %s", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "internal server error",
-		})
-		return
+		return utils.NewInternalError()
 	}
 	// err = tx.Commit(context.Background())
 	if err != nil {
 		log.Printf("Database commit failed: %s", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "internal server error",
-		})
-		return
+		return utils.NewInternalError()
 	}
+	return nil
+}
 
+func (h *Handler) setAccessCookie(c *gin.Context, req *RegisterRequest) *utils.AppError {
 	curTime := time.Now()
-	accessToken, err := h.tokenFactory.CreateAccessToken(usernameForm, "user", curTime)
+	accessToken, err := h.tokenFactory.CreateAccessToken(req.Username, "user", curTime)
 	if err != nil {
 		log.Printf("Failed sign access token: %s", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "internal server error",
-		})
-		return
+		return utils.NewInternalError()
 	}
-	log.Println(accessToken)
 
 	c.SetSameSite(http.SameSiteDefaultMode)
 	c.SetCookie("access_token", accessToken, EIGHT_HOUR, "/", "localhost", true, true)
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": fmt.Sprintf("registered %s", usernameForm),
-	})
-
-}
-
-func (h *Handler) Login(c *gin.Context) {
-}
-
-func validateRegistrationForm() bool {
-
-}
-
-func checkUserExists() (bool, error) {
-
-}
-
-func createUser() error {
-
+	return nil
 }
