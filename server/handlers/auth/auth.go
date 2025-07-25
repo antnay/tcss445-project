@@ -29,8 +29,8 @@ type AuthError struct {
 
 type RegisterRequest struct {
 	Email    string `form:"email" binding:"required,email"`
-	Username string `form:"username" binding:"required,username"`
-	Password string `form:"password" binding:"required,password"`
+	Username string `form:"username" binding:"required,alphanum,min=3,max=20"`
+	Password string `form:"password" binding:"required,min=8"`
 }
 
 func NewHandler(pool *pgxpool.Pool, tokenFactory *utils.TokenFactory) *Handler {
@@ -43,6 +43,7 @@ func NewHandler(pool *pgxpool.Pool, tokenFactory *utils.TokenFactory) *Handler {
 func (h *Handler) Register(c *gin.Context) {
 	var req RegisterRequest
 	if err := c.ShouldBind(&req); err != nil {
+		log.Printf("Failed to bind form: %s", err)
 		c.Error(utils.NewValidationError(err.Error()))
 		return
 	}
