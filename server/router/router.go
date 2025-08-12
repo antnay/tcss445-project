@@ -44,12 +44,12 @@ func NewRouter() *Router {
 		Router: gin.Default(),
 	}
 	s.Router.Use(ErrorHandler())
-	tokenFactory, err := utils.NewTokenFactory()
-	if err != nil {
-		log.Fatalf("error when setting up token factory: %s\n", err)
-	}
+	// tokenFactory, err := utils.NewTokenFactory()
+	// if err != nil {
+	// 	log.Fatalf("error when setting up token factory: %s\n", err)
+	// }
 
-	s.tokenFactory = tokenFactory
+	// s.tokenFactory = tokenFactory
 
 	s.Router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{
