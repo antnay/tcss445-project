@@ -1,11 +1,13 @@
 package public
 
 import (
+	"context"
+	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"strconv"  
 	"strings" 
-	
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -70,8 +72,8 @@ type CrimesByArea struct {
 }
 
 func (h *Handler) GetCrimes(c *gin.Context) {
-	// Mock crime data for testing
-	allCrimes := h.getAllMockCrimes()  //  helper function
+	// Get real crime data from database
+	allCrimes := h.getAllRealCrimes()
 
 	// Get query parameters
 	crimeType := c.Query("type")        // ?type=Theft
@@ -87,7 +89,7 @@ func (h *Handler) GetCrimes(c *gin.Context) {
 			continue
 		}
 
-		// Filter by exact date
+		// Filter by date
 		if date != "" && crime.Date != date {
 			continue
 		}
@@ -117,6 +119,7 @@ func (h *Handler) GetCrimes(c *gin.Context) {
 
 	c.JSON(http.StatusOK, response)
 }
+
 // Haversine formula to calculate distance between two points
 func haversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
 	const R = 6371 // Earth's radius in kilometers
@@ -134,10 +137,9 @@ func haversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
 	return R * c
 }
 
-// 1. Geographic radius filtering - crimes within X km of a point
+// Geographic radius filtering - crimes within X km of a point
 func (h *Handler) GetCrimesInRadius(c *gin.Context) {
-	// Get all crimes (same mock data as before)
-	allCrimes := h.getAllMockCrimes()
+	allCrimes := h.getAllRealCrimes()
 
 	// Get query parameters
 	latStr := c.Query("lat")      // Center latitude
@@ -179,9 +181,9 @@ func (h *Handler) GetCrimesInRadius(c *gin.Context) {
 	})
 }
 
-// 2. Crime statistics endpoint
+// Crime statistics endpoint
 func (h *Handler) GetCrimeStats(c *gin.Context) {
-	allCrimes := h.getAllMockCrimes()
+	allCrimes := h.getAllRealCrimes()
 	
 	// Count by type
 	crimesByType := make(map[string]int)
@@ -214,9 +216,9 @@ func (h *Handler) GetCrimeStats(c *gin.Context) {
 	c.JSON(http.StatusOK, stats)
 }
 
-// 3. Heat map data endpoint - returns points with intensity
+// Heat map data endpoint - returns points with intensity
 func (h *Handler) GetHeatMapData(c *gin.Context) {
-	allCrimes := h.getAllMockCrimes()
+	allCrimes := h.getAllRealCrimes()
 	
 	// Grid size for heat map (adjust as needed)
 	gridSize := 0.005 // About 500 meters
@@ -252,9 +254,9 @@ func (h *Handler) GetHeatMapData(c *gin.Context) {
 	})
 }
 
-// 4. Crime trends endpoint - crimes over time
+// Crime trends endpoint - crimes over time
 func (h *Handler) GetCrimeTrends(c *gin.Context) {
-	allCrimes := h.getAllMockCrimes()
+	allCrimes := h.getAllRealCrimes()
 	
 	// Group by date and type
 	trends := make(map[string]map[string]int)
@@ -270,15 +272,15 @@ func (h *Handler) GetCrimeTrends(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"trends": trends,
 		"date_range": gin.H{
-			"start": "2024-08-08",
-			"end": "2024-08-12",
+			"start": "2024-02-27",
+			"end": "2024-11-22",
 		},
 	})
 }
 
-// 5. Dangerous areas endpoint
+// Dangerous areas endpoint
 func (h *Handler) GetDangerousAreas(c *gin.Context) {
-	allCrimes := h.getAllMockCrimes()
+	allCrimes := h.getAllRealCrimes()
 	
 	// Define area boundaries (simplified)
 	areas := map[string][]Crime{
@@ -321,7 +323,93 @@ func (h *Handler) GetDangerousAreas(c *gin.Context) {
 	})
 }
 
-// Helper function to get all mock crimes (extract the data to reuse)
+// Main function to get real crime data from database
+func (h *Handler) getAllRealCrimes() []Crime {
+	// Corrected query - crime incidents connect directly to locations
+	query := `
+		SELECT 
+			ci.incident_id,
+			ci.address_id,
+			ci.crime_category_id,
+			ci.incident_date::text,
+			COALESCE(ci.incident_time, '00:00') as incident_time,
+			COALESCE(l.latitude, 47.2529) as latitude,
+			COALESCE(l.longitude, -122.4443) as longitude
+		FROM crime_incidents_2024 ci
+		LEFT JOIN locations l ON ci.location_id = l.location_id
+		ORDER BY ci.incident_id DESC
+		LIMIT 200
+	`
+	
+	rows, err := h.pool.Query(context.Background(), query)
+	if err != nil {
+		log.Printf("Error querying crimes with coordinates: %v", err)
+		return h.getAllMockCrimes()
+	}
+	defer rows.Close()
+
+	var crimes []Crime
+	for rows.Next() {
+		var crime Crime
+		var addressID, categoryID int
+		var incidentTime string
+		var latitude, longitude float64
+		
+		err := rows.Scan(
+			&crime.IncidentID,
+			&addressID,
+			&categoryID,
+			&crime.Date,
+			&incidentTime,
+			&latitude,    // Real latitude from locations table
+			&longitude,   // Real longitude from locations table
+		)
+		
+		if err != nil {
+			log.Printf("Error scanning crime row: %v", err)
+			continue
+		}
+
+		crime.Time = incidentTime
+		crime.Latitude = latitude    // Real coordinates!
+		crime.Longitude = longitude  // Real coordinates!
+		crime.Address = fmt.Sprintf("Address ID: %d", addressID)
+		crime.CrimeType = mapCategoryIDToName(categoryID)
+
+		crimes = append(crimes, crime)
+	}
+
+	if len(crimes) == 0 {
+		log.Println("No crimes found in database, using mock data")
+		return h.getAllMockCrimes()
+	}
+
+	log.Printf("Successfully loaded %d real crimes with coordinates from database", len(crimes))
+	return crimes
+}
+
+// Map crime category IDs to readable names
+func mapCategoryIDToName(categoryID int) string {
+	categoryMap := map[int]string{
+		1:  "Theft",
+		2:  "Burglary", 
+		3:  "Assault",
+		4:  "Vandalism",
+		5:  "Drug Offense",
+		6:  "Robbery",
+		7:  "Domestic Violence",
+		8:  "Fraud",
+		9:  "Vehicle Theft",
+		10: "Weapons Violation",
+	}
+	
+	if name, exists := categoryMap[categoryID]; exists {
+		return name
+	}
+	return "Other"
+}
+
+// Backup mock data function
 func (h *Handler) getAllMockCrimes() []Crime {
 	return []Crime{
 		{IncidentID: 1, Address: "123 Main St, Tacoma, WA", Latitude: 47.2529, Longitude: -122.4443, CrimeType: "Theft", Date: "2024-08-10", Time: "14:30"},
@@ -329,10 +417,5 @@ func (h *Handler) getAllMockCrimes() []Crime {
 		{IncidentID: 3, Address: "789 Commerce St, Tacoma, WA", Latitude: 47.2528, Longitude: -122.4594, CrimeType: "Assault", Date: "2024-08-12", Time: "18:45"},
 		{IncidentID: 4, Address: "321 6th Ave, Tacoma, WA", Latitude: 47.2545, Longitude: -122.4580, CrimeType: "Vandalism", Date: "2024-08-09", Time: "03:20"},
 		{IncidentID: 5, Address: "654 Market St, Tacoma, WA", Latitude: 47.2510, Longitude: -122.4520, CrimeType: "Drug Offense", Date: "2024-08-08", Time: "16:10"},
-		{IncidentID: 6, Address: "987 Broadway, Tacoma, WA", Latitude: 47.2520, Longitude: -122.4470, CrimeType: "Theft", Date: "2024-08-12", Time: "09:15"},
-		{IncidentID: 7, Address: "159 Union Ave, Tacoma, WA", Latitude: 47.2540, Longitude: -122.4600, CrimeType: "Burglary", Date: "2024-08-10", Time: "23:45"},
-		{IncidentID: 8, Address: "753 6th Ave, Tacoma, WA", Latitude: 47.2555, Longitude: -122.4575, CrimeType: "Assault", Date: "2024-08-11", Time: "20:30"},
-		{IncidentID: 9, Address: "147 Pine St, Tacoma, WA", Latitude: 47.2535, Longitude: -122.4495, CrimeType: "Theft", Date: "2024-08-09", Time: "12:45"},
-		{IncidentID: 10, Address: "258 MLK Jr Way, Tacoma, WA", Latitude: 47.2548, Longitude: -122.4512, CrimeType: "Drug Offense", Date: "2024-08-10", Time: "01:15"},
 	}
 }
