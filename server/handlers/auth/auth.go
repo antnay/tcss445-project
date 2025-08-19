@@ -137,7 +137,7 @@ func (h *Handler) createUser(req *RegisterRequest, passwordHash string) *utils.A
 
 	var userId int
 	err = tx.QueryRow(context.Background(),
-		`INSERT INTO users (username, email)
+		`INSERT INTO user_profiles (username, email)
 		VALUES ($1, $2)
 		RETURNING id
 		`,
@@ -157,7 +157,7 @@ func (h *Handler) createUser(req *RegisterRequest, passwordHash string) *utils.A
 		log.Printf("Insert password_login failed: %s", err)
 		return utils.NewInternalError()
 	}
-	// err = tx.Commit(context.Background())
+	err = tx.Commit(context.Background())
 	if err != nil {
 		log.Printf("Database commit failed: %s", err)
 		return utils.NewInternalError()

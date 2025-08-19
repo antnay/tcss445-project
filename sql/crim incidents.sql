@@ -44,6 +44,7 @@ CREATE OR REPLACE FUNCTION add_crime_incident(
     p_longitude numeric(10, 7),
     p_street_address varchar(255),
     p_postal_code varchar(20),
+    p_neighborhood varchar(100),
     p_crime_category_name varchar(100),
     p_incident_date date,
     p_incident_time time without time zone DEFAULT NULL,
@@ -59,6 +60,7 @@ DECLARE
     v_location_id       bigint;
     v_source_id         bigint;
     v_address_id        bigint;
+    v_neighborhood_id   bigint;
     v_crime_category_id bigint;
     v_incident_id       bigint;
 BEGIN
@@ -118,6 +120,17 @@ BEGIN
         RETURNING city_id INTO v_city_id;
     END IF;
 
+    SELECT neighborhood_id
+    INTO v_neighborhood_id
+    FROM public.neighborhoods
+    WHERE neighborhood_name = p_neighborhood;
+
+    IF v_neighborhood_id IS NULL THEN
+        INSERT INTO public.neighborhoods (neighborhood_name, city_id)
+        VALUES (p_neighborhood, v_city_id)
+        RETURNING neighborhood_id INTO v_location_id;
+    END IF;
+
     -- 4. Handle location (lookup first, insert if not found)
     SELECT location_id
     INTO v_location_id
@@ -152,8 +165,8 @@ BEGIN
       AND (postal_code = p_postal_code OR (postal_code IS NULL AND p_postal_code IS NULL));
 
     IF v_address_id IS NULL THEN
-        INSERT INTO public.addresses (street_address, city_id, postal_code)
-        VALUES (p_street_address, v_city_id, p_postal_code)
+        INSERT INTO public.addresses (street_address, city_id, postal_code, neighborhood)
+        VALUES (p_street_address, v_city_id, p_postal_code, v_neighborhood_id)
         RETURNING address_id INTO v_address_id;
     END IF;
 
@@ -195,6 +208,157 @@ EXCEPTION
         RAISE EXCEPTION 'Error adding crime incident: %', sqlerrm;
 END;
 $$ LANGUAGE plpgsql;
+
+
+
+CREATE OR REPLACE FUNCTION add_crime_incident_partition(
+    p_city_name varchar(100),
+    p_state_name varchar(100),
+    p_source_name varchar(255),
+    p_latitude numeric(10, 7),
+    p_longitude numeric(10, 7),
+    p_street_address varchar(255),
+    p_postal_code varchar(20),
+    p_neighborhood varchar(100),
+    p_crime_category_name varchar(100),
+    p_incident_date date,
+    p_incident_time time without time zone DEFAULT NULL,
+    p_case_num varchar(25) DEFAULT NULL,
+    p_is_resolved boolean DEFAULT FALSE
+) RETURNS bigint AS
+$$
+DECLARE
+    v_state_id          bigint;
+    v_county_id         bigint;
+    v_city_id           bigint;
+    v_location_id       bigint;
+    v_neighborhood_id   bigint;
+    v_source_id         bigint;
+    v_address_id        bigint;
+    v_crime_category_id bigint;
+    v_incident_id       bigint;
+BEGIN
+    SELECT state_id
+    INTO v_state_id
+    FROM public.states
+    WHERE state_name = p_state_name;
+
+    IF v_state_id IS NULL THEN
+        INSERT INTO public.states (state_name)
+        VALUES (p_state_name)
+        RETURNING state_id INTO v_state_id;
+    END IF;
+
+    SELECT c.city_id, c.county_id
+    INTO v_city_id, v_county_id
+    FROM public.cities c
+             JOIN public.counties co ON c.county_id = co.county_id
+    WHERE co.state_id = v_state_id
+      AND c.city_name = p_city_name
+    LIMIT 1;
+
+    IF v_city_id IS NULL THEN
+        SELECT county_id
+        INTO v_county_id
+        FROM public.counties
+        WHERE state_id = v_state_id
+        LIMIT 1;
+
+        IF v_county_id IS NULL THEN
+            INSERT INTO public.counties (state_id, county_name)
+            VALUES (v_state_id, 'Unknown County')
+            RETURNING county_id INTO v_county_id;
+        END IF;
+
+        INSERT INTO public.cities (city_name, county_id)
+        VALUES (p_city_name, v_county_id)
+        RETURNING city_id INTO v_city_id;
+    END IF;
+
+    SELECT neighborhood_id
+    INTO v_neighborhood_id
+    FROM public.neighborhoods
+    WHERE neighborhood_name = p_neighborhood;
+
+    IF v_neighborhood_id IS NULL THEN
+        INSERT INTO public.neighborhoods (neighborhood_name, city_id)
+        VALUES (p_neighborhood, v_city_id)
+        RETURNING neighborhood_id INTO v_location_id;
+    END IF;
+
+    SELECT location_id
+    INTO v_location_id
+    FROM public.locations
+    WHERE latitude = p_latitude
+      AND longitude = p_longitude;
+
+    IF v_location_id IS NULL THEN
+        INSERT INTO public.locations (latitude, longitude)
+        VALUES (p_latitude, p_longitude)
+        RETURNING location_id INTO v_location_id;
+    END IF;
+
+    SELECT source_id
+    INTO v_source_id
+    FROM public.data_sources
+    WHERE source_name = p_source_name;
+
+    IF v_source_id IS NULL THEN
+        INSERT INTO public.data_sources (source_name)
+        VALUES (p_source_name)
+        RETURNING source_id INTO v_source_id;
+    END IF;
+
+    SELECT address_id
+    INTO v_address_id
+    FROM public.addresses
+    WHERE city_id = v_city_id
+      AND (street_address = p_street_address OR (street_address IS NULL AND p_street_address IS NULL))
+      AND (postal_code = p_postal_code OR (postal_code IS NULL AND p_postal_code IS NULL));
+
+    IF v_address_id IS NULL THEN
+        INSERT INTO public.addresses (street_address, city_id, postal_code, neighborhood_id)
+        VALUES (p_street_address, v_city_id, p_postal_code, v_neighborhood_id)
+        RETURNING address_id INTO v_address_id;
+    END IF;
+
+    SELECT crime_category_id
+    INTO v_crime_category_id
+    FROM public.crime_categories
+    WHERE category_name = p_crime_category_name;
+
+    IF v_crime_category_id IS NULL THEN
+        INSERT INTO public.crime_categories (category_name)
+        VALUES (p_crime_category_name)
+        RETURNING crime_category_id INTO v_crime_category_id;
+    END IF;
+
+    INSERT INTO public.crime_incidents_partition (address_id,
+                                                  crime_category_id,
+                                                  incident_date,
+                                                  incident_time,
+                                                  location_id,
+                                                  case_num,
+                                                  is_resolved,
+                                                  source_id)
+    VALUES (v_address_id,
+            v_crime_category_id,
+            p_incident_date,
+            p_incident_time,
+            v_location_id,
+            p_case_num,
+            p_is_resolved,
+            v_source_id)
+    RETURNING incident_id INTO v_incident_id;
+
+    RETURN v_incident_id;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error adding crime incident: %', sqlerrm;
+END;
+$$ LANGUAGE plpgsql;
+
 
 SELECT *
 FROM add_crime_incident(p_city_name := 'Tacoma',
@@ -265,3 +429,19 @@ FROM add_crime_incident(p_city_name := 'Tacoma',
                         p_incident_date := '2024-01-18'::date,
                         p_incident_time := '06:00:00'::time,
                         p_case_num := '2401909037');
+
+
+SELECT *
+FROM add_crime_incident_partition(p_city_name := 'Tacoma',
+                                  p_state_name := 'Washington',
+                                  p_country_name := 'United States',
+                                  p_source_name := 'City of Tacoma Reported Crime (Tacoma)',
+                                  p_latitude := 47.174,
+                                  p_longitude := -122.433,
+                                  p_street_address := '9200 PACIFIC AVE',
+                                  p_postal_code := '98444',
+                                  p_crime_category_name := 'Motor Vehicle Theft',
+                                  p_incident_date := '2025-04-04'::date,
+                                  p_incident_time := '05:00:00'::time,
+                                  p_case_num := '2509801347');
+

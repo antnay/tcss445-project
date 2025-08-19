@@ -6,15 +6,18 @@ import (
 	"log"
 	"math"
 	"net/http"
-	"strconv"  
-	"strings" 
+	"sort"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
-	EIGHT_HOUR = 3600 * 8
+	EIGHT_HOUR  = 3600 * 8
+	MILE_APPROX = 69
 )
 
 type Handler struct {
@@ -35,8 +38,8 @@ func (h *Handler) Ping(c *gin.Context) {
 }
 
 type Crime struct {
-	IncidentID   int     `json:"incident_id"`
 	Address      string  `json:"address"`
+	Neighborhood string  `json:"neighborhood"`
 	Latitude     float64 `json:"latitude"`
 	Longitude    float64 `json:"longitude"`
 	CrimeType    string  `json:"crime_type"`
@@ -50,12 +53,12 @@ type CrimeResponse struct {
 }
 
 type CrimeStats struct {
-	TotalCrimes    int                    `json:"total_crimes"`
-	CrimesByType   map[string]int         `json:"crimes_by_type"`
-	CrimesByDate   map[string]int         `json:"crimes_by_date"`
-	CrimesByHour   map[string]int         `json:"crimes_by_hour"`
-	MostDangerous  []string               `json:"most_dangerous_areas"`
-	SafestAreas    []string               `json:"safest_areas"`
+	TotalCrimes   int            `json:"total_crimes"`
+	CrimesByType  map[string]int `json:"crimes_by_type"`
+	CrimesByDate  map[string]int `json:"crimes_by_date"`
+	CrimesByHour  map[string]int `json:"crimes_by_hour"`
+	MostDangerous []string       `json:"most_dangerous_areas"`
+	SafestAreas   []string       `json:"safest_areas"`
 }
 
 type HeatMapPoint struct {
@@ -66,63 +69,229 @@ type HeatMapPoint struct {
 }
 
 type CrimesByArea struct {
-	Area   string `json:"area"`
-	Count  int    `json:"count"`
+	Area   string  `json:"area"`
+	Count  int     `json:"count"`
 	Crimes []Crime `json:"crimes"`
 }
 
-func (h *Handler) GetCrimes(c *gin.Context) {
-	// Get real crime data from database
-	allCrimes := h.getAllRealCrimes()
+func getCurrentYear() string {
 
-	// Get query parameters
-	crimeType := c.Query("type")        // ?type=Theft
-	date := c.Query("date")             // ?date=2024-08-10
-	startDate := c.Query("start_date")  // ?start_date=2024-08-08
-	endDate := c.Query("end_date")      // ?end_date=2024-08-12
-	limit := c.Query("limit")           // ?limit=10
+	return strconv.Itoa(time.Now().Year())
+}
 
-	var filteredCrimes []Crime
-	for _, crime := range allCrimes {
-		// Filter by crime type
-		if crimeType != "" && strings.ToLower(crime.CrimeType) != strings.ToLower(crimeType) {
-			continue
-		}
-
-		// Filter by date
-		if date != "" && crime.Date != date {
-			continue
-		}
-
-		// Filter by date range
-		if startDate != "" && crime.Date < startDate {
-			continue
-		}
-		if endDate != "" && crime.Date > endDate {
-			continue
-		}
-
-		filteredCrimes = append(filteredCrimes, crime)
+func validateYears(year string) []string {
+	if year == "" {
+		return []string{getCurrentYear()}
 	}
 
-	// Apply limit if specified
-	if limit != "" {
-		if limitNum, err := strconv.Atoi(limit); err == nil && limitNum > 0 && limitNum < len(filteredCrimes) {
-			filteredCrimes = filteredCrimes[:limitNum]
+	years := strings.Split(year, ",")
+	validYears := []string{}
+
+	for i := range years {
+		log.Printf("current year %s\n", years[i])
+		if len(years[i]) == 4 {
+			if yearInt, err := strconv.Atoi(years[i]); err == nil && yearInt >= 2018 && yearInt <= time.Now().Year() {
+				validYears = append(validYears, years[i])
+			}
 		}
+	}
+	return validYears
+}
+
+func validateYear(year string) string {
+	if year == "" {
+		return getCurrentYear()
+	}
+
+	if len(year) == 4 {
+		if yearInt, err := strconv.Atoi(year); err == nil && yearInt >= 2018 && yearInt <= time.Now().Year() {
+			return year
+		}
+	}
+
+	return getCurrentYear()
+}
+
+func (h *Handler) GetCrimes(c *gin.Context) {
+	year := validateYears(c.Query("year"))
+	crimeType := c.Query("type")
+	date := c.Query("date")
+	startDate := c.Query("start_date")
+	endDate := c.Query("end_date")
+	city := c.Query("city")
+	neighborhood := c.Query("neighborhood")
+	limitStr := c.Query("limit")
+
+	limit := 100
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 1000 {
+			limit = l
+		}
+	}
+
+	crimes, err := h.getCrimesWithFilters(year, crimeType, date, startDate, endDate, city, neighborhood, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to retrieve crimes",
+		})
+		return
 	}
 
 	response := CrimeResponse{
-		Crimes: filteredCrimes,
-		Count:  len(filteredCrimes),
+		Crimes: crimes,
+		Count:  len(crimes),
 	}
 
 	c.JSON(http.StatusOK, response)
 }
 
-// Haversine formula to calculate distance between two points
-func haversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
-	const R = 6371 // Earth's radius in kilometers
+func (h *Handler) getCrimesWithFilters(year []string, crimeType, date, startDate, endDate, city, neighborhood string, limit int) ([]Crime, error) {
+	var query string
+	if len(year) == 1 {
+		query = `
+		SELECT 
+			COALESCE(a.street_address, 'Unknown Address') as address,
+			COALESCE(n.neighborhood_name, 'Unknown neighborhood') as neighborhood,
+			ci.incident_date::text,
+			COALESCE(ci.incident_time, '00:00') as incident_time,
+			COALESCE(l.latitude, 47.2529) as latitude,
+			COALESCE(l.longitude, -122.4443) as longitude,
+			COALESCE(cc.category_name, 'Other') as crime_type
+		FROM crime_incidents_` + year[0] + ` ci
+		JOIN addresses a ON ci.address_id = a.address_id
+		JOIN neighborhoods n ON a.neighborhood_id = n.neighborhood_id
+		JOIN cities c ON a.city_id = c.city_id
+		LEFT JOIN locations l ON a.location_id = l.location_id
+		LEFT JOIN crime_categories cc ON ci.crime_category_id = cc.crime_category_id
+		WHERE 1=1
+		`
+	} else {
+		sb := strings.Builder{}
+		p1 := `
+		SELECT 
+			COALESCE(a.street_address, 'Unknown Address') as address,
+			COALESCE(n.neighborhood_name, 'Unknown neighborhood') as neighborhood,
+			ci.incident_date::text,
+			COALESCE(ci.incident_time, '00:00') as incident_time,
+			COALESCE(l.latitude, 47.2529) as latitude,
+			COALESCE(l.longitude, -122.4443) as longitude,
+			COALESCE(cc.category_name, 'Other') as crime_type
+		FROM (
+		`
+		_, err := sb.WriteString(p1)
+		if err != nil {
+			log.Println(err)
+			return nil, err
+		}
+		var i int
+		for i = 0; i < len(year)-1; i++ {
+			_, err = sb.WriteString("SELECT incident_date, incident_time, address_id, crime_category_id FROM crime_incidents_" + year[i] + "\nUNION ALL\n")
+			if err != nil {
+				log.Println(err)
+				return nil, err
+			}
+		}
+		_, err = sb.WriteString("SELECT incident_date, incident_time, address_id, crime_category_id FROM crime_incidents_" + year[i])
+		if err != nil {
+			log.Println(err)
+			return nil, err
+		}
+		p2 := `
+		) as ci
+		JOIN addresses a ON ci.address_id = a.address_id
+		JOIN neighborhoods n ON a.neighborhood_id = n.neighborhood_id
+		JOIN cities c ON a.city_id = c.city_id
+		LEFT JOIN locations l ON a.location_id = l.location_id
+		LEFT JOIN crime_categories cc ON ci.crime_category_id = cc.crime_category_id
+		WHERE 1=1
+		`
+		_, err = sb.WriteString(p2)
+		if err != nil {
+			log.Println(err)
+			return nil, err
+		}
+		query = sb.String()
+	}
+
+	var args []any
+	argIndex := 1
+
+	if crimeType != "" {
+		query += fmt.Sprintf(" AND LOWER(cc.category_name) = LOWER($%d)", argIndex)
+		args = append(args, crimeType)
+		argIndex++
+	}
+
+	if date != "" {
+		query += fmt.Sprintf(" AND ci.incident_date = $%d", argIndex)
+		args = append(args, date)
+		argIndex++
+	}
+
+	if startDate != "" {
+		query += fmt.Sprintf(" AND ci.incident_date >= $%d", argIndex)
+		args = append(args, startDate)
+		argIndex++
+	}
+
+	if endDate != "" {
+		query += fmt.Sprintf(" AND ci.incident_date <= $%d", argIndex)
+		args = append(args, endDate)
+		argIndex++
+	}
+
+	if neighborhood != "" {
+		query += fmt.Sprintf(" AND n.neighborhood_name LIKE $%d", argIndex)
+		args = append(args, "%"+neighborhood+"%")
+		argIndex++
+	}
+
+	if city != "" {
+		query += fmt.Sprintf(" AND n.city_name LIKE $%d", argIndex)
+		args = append(args, "%"+city+"%")
+		argIndex++
+	}
+
+	query += " ORDER BY ci.incident_date DESC, a.street_address DESC"
+	query += fmt.Sprintf(" LIMIT $%d", argIndex)
+	args = append(args, limit)
+
+	rows, err := h.pool.Query(context.Background(), query, args...)
+	if err != nil {
+		log.Printf("Error querying crimes: %v", err)
+		return h.getAllMockCrimes(), nil
+	}
+	defer rows.Close()
+
+	var crimes []Crime
+	for rows.Next() {
+		var crime Crime
+		err := rows.Scan(
+			&crime.Address,
+			&crime.Neighborhood,
+			&crime.Date,
+			&crime.Time,
+			&crime.Latitude,
+			&crime.Longitude,
+			&crime.CrimeType,
+		)
+		if err != nil {
+			log.Printf("Error scanning crime row: %v", err)
+			continue
+		}
+		crimes = append(crimes, crime)
+	}
+
+	if len(crimes) == 0 {
+		return h.getAllMockCrimes(), nil
+	}
+
+	return crimes, nil
+}
+
+// Haversine formula to calculate distance between two points in MILES
+func haversineDistanceMiles(lat1, lon1, lat2, lon2 float64) float64 {
+	const R = 3959
 
 	lat1Rad := lat1 * math.Pi / 180
 	lat2Rad := lat2 * math.Pi / 180
@@ -131,105 +300,395 @@ func haversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
 
 	a := math.Sin(deltaLat/2)*math.Sin(deltaLat/2) +
 		math.Cos(lat1Rad)*math.Cos(lat2Rad)*
-		math.Sin(deltaLon/2)*math.Sin(deltaLon/2)
+			math.Sin(deltaLon/2)*math.Sin(deltaLon/2)
 	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 
 	return R * c
 }
 
-// Geographic radius filtering - crimes within X km of a point
+// Geographic radius filtering - crimes within X miles of a point
 func (h *Handler) GetCrimesInRadius(c *gin.Context) {
-	allCrimes := h.getAllRealCrimes()
+	year := validateYears(c.Query("year"))
 
-	// Get query parameters
-	latStr := c.Query("lat")      // Center latitude
-	lonStr := c.Query("lng")      // Center longitude  
-	radiusStr := c.Query("radius") // Radius in kilometers
+	latStr := c.Query("lat")
+	lonStr := c.Query("lng")
+	radiusStr := c.Query("radius")
 	crimeType := c.Query("type")
-	
+	limitStr := c.Query("limit")
+
 	if latStr == "" || lonStr == "" || radiusStr == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "lat, lng, and radius parameters are required",
-			"example": "/api/public/crimes/radius?lat=47.2529&lng=-122.4443&radius=1.5",
+			"error":   "lat, lng, and radius parameters are required",
+			"example": "/api/public/crimes/radius?lat=47.2529&lng=-122.4443&radius=1.5&year=2025",
 		})
 		return
 	}
 
-	centerLat, _ := strconv.ParseFloat(latStr, 64)
-	centerLon, _ := strconv.ParseFloat(lonStr, 64)
-	radius, _ := strconv.ParseFloat(radiusStr, 64)
+	centerLat, err := strconv.ParseFloat(latStr, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid latitude"})
+		return
+	}
 
-	var crimesInRadius []Crime
-	for _, crime := range allCrimes {
-		distance := haversineDistance(centerLat, centerLon, crime.Latitude, crime.Longitude)
-		if distance <= radius {
-			// Filter by type if specified
-			if crimeType == "" || strings.ToLower(crime.CrimeType) == strings.ToLower(crimeType) {
-				crimesInRadius = append(crimesInRadius, crime)
-			}
+	centerLon, err := strconv.ParseFloat(lonStr, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid longitude"})
+		return
+	}
+
+	radius, err := strconv.ParseFloat(radiusStr, 64)
+	if err != nil || radius <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid radius"})
+		return
+	}
+
+	limit := 500
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 2000 {
+			limit = l
 		}
+	}
+
+	crimes, err := h.getCrimesInRadius(year, centerLat, centerLon, radius, crimeType, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to retrieve crimes in radius",
+		})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"center": gin.H{
-			"latitude": centerLat,
+			"latitude":  centerLat,
 			"longitude": centerLon,
 		},
-		"radius_km": radius,
-		"crimes": crimesInRadius,
-		"count": len(crimesInRadius),
+		"radius_miles": radius,
+		"crimes":       crimes,
+		"count":        len(crimes),
+		"year":         year,
 	})
+}
+
+func (h *Handler) getCrimesInRadius(year []string, centerLat, centerLon, radius float64, crimeType string, limit int) ([]Crime, error) {
+	var query string
+	if len(year) == 1 {
+		query = `
+		SELECT 
+			COALESCE(a.street_address, 'Unknown Address') as address,
+			ci.incident_date::text,
+			COALESCE(ci.incident_time, '00:00') as incident_time,
+			COALESCE(l.latitude, 47.2529) as latitude,
+			COALESCE(l.longitude, -122.4443) as longitude,
+			COALESCE(cc.category_name, 'Other') as crime_type
+		FROM crime_incidents_` + year[0] + ` ci
+		JOIN addresses a ON ci.address_id = a.address_id
+		LEFT JOIN locations l ON a.location_id = l.location_id
+		LEFT JOIN crime_categories cc ON ci.crime_category_id = cc.crime_category_id
+		WHERE l.latitude IS NOT NULL AND l.longitude IS NOT NULL
+	`
+	} else {
+		sb := strings.Builder{}
+		p1 := `
+		SELECT 
+			COALESCE(a.street_address, 'Unknown Address') as address,
+			ci.incident_date::text,
+			COALESCE(ci.incident_time, '00:00') as incident_time,
+			COALESCE(l.latitude, 47.2529) as latitude,
+			COALESCE(l.longitude, -122.4443) as longitude,
+			COALESCE(cc.category_name, 'Other') as crime_type
+		FROM (
+		`
+		_, err := sb.WriteString(p1)
+		if err != nil {
+			log.Println(err)
+			return nil, err
+		}
+		for i := range year {
+			_, err = sb.WriteString(`crime_incidents_` + year[i] + `UNION ALL `)
+			if err != nil {
+				log.Println(err)
+				return nil, err
+			}
+		}
+		p2 := `
+		) as ci
+		JOIN addresses a ON ci.address_id = a.address_id
+		LEFT JOIN locations l ON a.location_id = l.location_id
+		LEFT JOIN crime_categories cc ON ci.crime_category_id = cc.crime_category_id
+		WHERE l.latitude IS NOT NULL AND l.longitude IS NOT NULL
+		`
+		_, err = sb.WriteString(p2)
+		if err != nil {
+			log.Println(err)
+			return nil, err
+		}
+		query = sb.String()
+	}
+
+	var args []any
+	argIndex := 1
+
+	if crimeType != "" {
+		query += fmt.Sprintf(" AND LOWER(cc.category_name) = LOWER($%d)", argIndex)
+		args = append(args, crimeType)
+		argIndex++
+	}
+
+	query += " ORDER BY ci.incident_date DESC"
+	query += fmt.Sprintf(" LIMIT $%d", argIndex)
+	args = append(args, limit*2)
+
+	rows, err := h.pool.Query(context.Background(), query, args...)
+	if err != nil {
+		log.Printf("Error querying crimes for radius: %v", err)
+		return []Crime{}, err
+	}
+	defer rows.Close()
+
+	var crimesInRadius []Crime
+	for rows.Next() {
+		var crime Crime
+		err := rows.Scan(
+			&crime.Address,
+			&crime.Date,
+			&crime.Time,
+			&crime.Latitude,
+			&crime.Longitude,
+			&crime.CrimeType,
+		)
+		if err != nil {
+			log.Printf("Error scanning crime row: %v", err)
+			continue
+		}
+
+		distance := haversineDistanceMiles(centerLat, centerLon, crime.Latitude, crime.Longitude)
+		if distance <= radius {
+			crimesInRadius = append(crimesInRadius, crime)
+			if len(crimesInRadius) >= limit {
+				break
+			}
+		}
+	}
+
+	return crimesInRadius, nil
 }
 
 // Crime statistics endpoint
 func (h *Handler) GetCrimeStats(c *gin.Context) {
-	allCrimes := h.getAllRealCrimes()
-	
-	// Count by type
-	crimesByType := make(map[string]int)
-	crimesByDate := make(map[string]int)
-	crimesByHour := make(map[string]int)
+	year := validateYear(c.Query("year"))
 
-	for _, crime := range allCrimes {
-		// Count by type
-		crimesByType[crime.CrimeType]++
-		
-		// Count by date
-		crimesByDate[crime.Date]++
-		
-		// Count by hour (extract hour from time like "14:30")
-		if len(crime.Time) >= 2 {
-			hour := crime.Time[:2]
-			crimesByHour[hour]++
-		}
-	}
-
-	stats := CrimeStats{
-		TotalCrimes:    len(allCrimes),
-		CrimesByType:   crimesByType,
-		CrimesByDate:   crimesByDate,
-		CrimesByHour:   crimesByHour,
-		MostDangerous:  []string{"Downtown Tacoma", "6th Ave Corridor", "Hilltop"},
-		SafestAreas:    []string{"North End", "Proctor District", "Stadium District"},
+	stats, err := h.calculateCrimeStats(year)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to calculate crime statistics",
+		})
+		return
 	}
 
 	c.JSON(http.StatusOK, stats)
 }
 
+func (h *Handler) calculateCrimeStats(year string) (CrimeStats, error) {
+	typeQuery := `
+		SELECT 
+			COALESCE(cc.category_name, 'Other') as crime_type,
+			COUNT(*) as count
+		FROM crime_incidents_` + year + ` ci
+		LEFT JOIN crime_categories cc ON ci.crime_category_id = cc.crime_category_id
+		GROUP BY cc.category_name
+		ORDER BY count DESC
+	`
+
+	dateQuery := `
+		SELECT 
+			ci.incident_date::text as date,
+			COUNT(*) as count
+		FROM crime_incidents_` + year + ` ci
+		GROUP BY ci.incident_date
+		ORDER BY ci.incident_date DESC
+		LIMIT 30
+	`
+
+	hourQuery := `
+		SELECT 
+			EXTRACT(HOUR FROM COALESCE(ci.incident_time, '00:00:00')::time) as hour,
+			COUNT(*) as count
+		FROM crime_incidents_` + year + ` ci
+		GROUP BY EXTRACT(HOUR FROM COALESCE(ci.incident_time, '00:00:00')::time)
+		ORDER BY hour
+	`
+
+	areaQuery := `
+		SELECT 
+			COALESCE(n.neighborhood_name, 'Unknown Area') as area_name,
+			COUNT(*) as crime_count
+		FROM crime_incidents_` + year + ` ci
+		JOIN addresses a ON ci.address_id = a.address_id
+		LEFT JOIN neighborhoods n ON a.neighborhood_id = n.neighborhood_id
+		GROUP BY n.neighborhood_name
+		HAVING COUNT(*) > 0
+		ORDER BY crime_count DESC
+	`
+
+	crimesByType := make(map[string]int)
+	crimesByDate := make(map[string]int)
+	crimesByHour := make(map[string]int)
+	var mostDangerous, safestAreas []string
+	var totalCrimes int
+
+	if rows, err := h.pool.Query(context.Background(), typeQuery); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var crimeType string
+			var count int
+			if err := rows.Scan(&crimeType, &count); err == nil {
+				crimesByType[crimeType] = count
+				totalCrimes += count
+			}
+		}
+	}
+
+	if rows, err := h.pool.Query(context.Background(), dateQuery); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var date string
+			var count int
+			if err := rows.Scan(&date, &count); err == nil {
+				crimesByDate[date] = count
+			}
+		}
+	}
+
+	if rows, err := h.pool.Query(context.Background(), hourQuery); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var hour float64
+			var count int
+			if err := rows.Scan(&hour, &count); err == nil {
+				hourStr := fmt.Sprintf("%02.0f", hour)
+				crimesByHour[hourStr] = count
+			}
+		}
+	}
+
+	if rows, err := h.pool.Query(context.Background(), areaQuery); err == nil {
+		defer rows.Close()
+		var areas []struct {
+			name  string
+			count int
+		}
+		for rows.Next() {
+			var areaName string
+			var count int
+			if err := rows.Scan(&areaName, &count); err == nil {
+				areas = append(areas, struct {
+					name  string
+					count int
+				}{areaName, count})
+			}
+		}
+
+		if len(areas) > 0 {
+			maxAreas := min(len(areas), 5)
+			for i := range maxAreas {
+				mostDangerous = append(mostDangerous, areas[i].name)
+			}
+
+			if len(areas) > 5 {
+				start := len(areas) - 5
+				for i := start; i < len(areas); i++ {
+					safestAreas = append([]string{areas[i].name}, safestAreas...)
+				}
+			}
+		}
+	}
+
+	if len(mostDangerous) == 0 {
+		mostDangerous = []string{"No data available"}
+	}
+	if len(safestAreas) == 0 {
+		safestAreas = []string{"No data available"}
+	}
+
+	stats := CrimeStats{
+		TotalCrimes:   totalCrimes,
+		CrimesByType:  crimesByType,
+		CrimesByDate:  crimesByDate,
+		CrimesByHour:  crimesByHour,
+		MostDangerous: mostDangerous,
+		SafestAreas:   safestAreas,
+	}
+
+	return stats, nil
+}
+
 // Heat map data endpoint - returns points with intensity
 func (h *Handler) GetHeatMapData(c *gin.Context) {
-	allCrimes := h.getAllRealCrimes()
-	
-	// Grid size for heat map (adjust as needed)
-	gridSize := 0.005 // About 500 meters
+	year := validateYear(c.Query("year"))
+	crimeType := c.Query("type")
+	gridSizeStr := c.Query("grid_size")
+
+	gridSize := 0.005
+	if gridSizeStr != "" {
+		if gs, err := strconv.ParseFloat(gridSizeStr, 64); err == nil && gs > 0 && gs <= 0.1 {
+			gridSize = gs
+		}
+	}
+
+	heatPoints, err := h.generateHeatMapData(year, crimeType, gridSize)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to generate heat map data",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"heat_points":     heatPoints,
+		"grid_size_deg":   gridSize,
+		"grid_size_miles": gridSize * MILE_APPROX,
+		"total_points":    len(heatPoints),
+		"year":            year,
+		"crime_type":      crimeType,
+	})
+}
+
+func (h *Handler) generateHeatMapData(year, crimeType string, gridSize float64) ([]HeatMapPoint, error) {
+	query := `
+		SELECT 
+			COALESCE(l.latitude, 47.2529) as latitude,
+			COALESCE(l.longitude, -122.4443) as longitude
+		FROM crime_incidents_` + year + ` ci
+		JOIN addresses a ON ci.address_id = a.address_id
+		LEFT JOIN locations l ON a.location_id = l.location_id
+		LEFT JOIN crime_categories cc ON ci.crime_category_id = cc.crime_category_id
+		WHERE l.latitude IS NOT NULL AND l.longitude IS NOT NULL
+	`
+
+	var args []any
+	if crimeType != "" {
+		query += " AND LOWER(cc.category_name) = LOWER($1)"
+		args = append(args, crimeType)
+	}
+
+	rows, err := h.pool.Query(context.Background(), query, args...)
+	if err != nil {
+		log.Printf("Error querying crimes for heat map: %v", err)
+		return []HeatMapPoint{}, err
+	}
+	defer rows.Close()
+
 	intensityMap := make(map[string]int)
-	
-	// Group crimes into grid cells
-	for _, crime := range allCrimes {
-		// Round coordinates to grid
-		gridLat := math.Round(crime.Latitude/gridSize) * gridSize
-		gridLon := math.Round(crime.Longitude/gridSize) * gridSize
-		key := strconv.FormatFloat(gridLat, 'f', 6, 64) + "," + strconv.FormatFloat(gridLon, 'f', 6, 64)
+
+	for rows.Next() {
+		var lat, lon float64
+		if err := rows.Scan(&lat, &lon); err != nil {
+			continue
+		}
+
+		gridLat := math.Round(lat/gridSize) * gridSize
+		gridLon := math.Round(lon/gridSize) * gridSize
+		key := fmt.Sprintf("%.6f,%.6f", gridLat, gridLon)
 		intensityMap[key]++
 	}
 
@@ -238,184 +697,245 @@ func (h *Handler) GetHeatMapData(c *gin.Context) {
 		coords := strings.Split(key, ",")
 		lat, _ := strconv.ParseFloat(coords[0], 64)
 		lon, _ := strconv.ParseFloat(coords[1], 64)
-		
+
 		heatPoints = append(heatPoints, HeatMapPoint{
 			Latitude:  lat,
 			Longitude: lon,
 			Intensity: intensity,
-			Radius:    float64(intensity) * 200, // Scale radius based on intensity
+			Radius:    math.Min(float64(intensity)*50+100, 500), // Scale radius, max 500
 		})
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"heat_points": heatPoints,
-		"grid_size_km": gridSize * 111, // Convert to approximate km
-		"total_points": len(heatPoints),
-	})
+	return heatPoints, nil
 }
 
 // Crime trends endpoint - crimes over time
 func (h *Handler) GetCrimeTrends(c *gin.Context) {
-	allCrimes := h.getAllRealCrimes()
-	
-	// Group by date and type
-	trends := make(map[string]map[string]int)
-	
-	for _, crime := range allCrimes {
-		if trends[crime.Date] == nil {
-			trends[crime.Date] = make(map[string]int)
-		}
-		trends[crime.Date][crime.CrimeType]++
-		trends[crime.Date]["total"]++
-	}
+	year := validateYear(c.Query("year"))
+	crimeType := c.Query("type")
+	period := c.DefaultQuery("period", "daily") // daily, weekly, monthly
 
-	c.JSON(http.StatusOK, gin.H{
-		"trends": trends,
-		"date_range": gin.H{
-			"start": "2024-02-27",
-			"end": "2024-11-22",
-		},
-	})
-}
-
-// Dangerous areas endpoint
-func (h *Handler) GetDangerousAreas(c *gin.Context) {
-	allCrimes := h.getAllRealCrimes()
-	
-	// Define area boundaries (simplified)
-	areas := map[string][]Crime{
-		"Downtown": {},
-		"Hilltop": {},
-		"Stadium District": {},
-		"6th Avenue": {},
-		"North End": {},
-	}
-
-	// Categorize crimes by area (simplified logic based on coordinates)
-	for _, crime := range allCrimes {
-		switch {
-		case crime.Latitude > 47.254 && crime.Latitude < 47.257:
-			areas["Downtown"] = append(areas["Downtown"], crime)
-		case crime.Latitude > 47.250 && crime.Latitude < 47.253:
-			areas["Hilltop"] = append(areas["Hilltop"], crime)
-		case crime.Longitude > -122.46:
-			areas["Stadium District"] = append(areas["Stadium District"], crime)
-		case strings.Contains(crime.Address, "6th"):
-			areas["6th Avenue"] = append(areas["6th Avenue"], crime)
-		default:
-			areas["North End"] = append(areas["North End"], crime)
-		}
-	}
-
-	var areaStats []CrimesByArea
-	for area, crimes := range areas {
-		areaStats = append(areaStats, CrimesByArea{
-			Area:   area,
-			Count:  len(crimes),
-			Crimes: crimes,
+	trends, err := h.calculateCrimeTrends(year, crimeType, period)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to calculate crime trends",
 		})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"areas": areaStats,
-		"most_dangerous": "Downtown",
-		"safest": "North End",
+		"trends":     trends,
+		"year":       year,
+		"crime_type": crimeType,
+		"period":     period,
 	})
 }
 
-// Main function to get real crime data from database
-func (h *Handler) getAllRealCrimes() []Crime {
-	// Corrected query - crime incidents connect directly to locations
+func (h *Handler) calculateCrimeTrends(year, crimeType, period string) (map[string]map[string]int, error) {
+	var dateFormat string
+	switch period {
+	case "weekly":
+		dateFormat = "YYYY-\"Week\"-WW"
+	case "monthly":
+		dateFormat = "YYYY-MM"
+	default: // daily
+		dateFormat = "YYYY-MM-DD"
+	}
+
 	query := `
 		SELECT 
-			ci.incident_id,
-			ci.address_id,
-			ci.crime_category_id,
-			ci.incident_date::text,
+			TO_CHAR(ci.incident_date, '` + dateFormat + `') as time_period,
+			COALESCE(cc.category_name, 'Other') as crime_type,
+			COUNT(*) as count
+		FROM crime_incidents_` + year + ` ci
+		LEFT JOIN crime_categories cc ON ci.crime_category_id = cc.crime_category_id
+		WHERE 1=1
+	`
+
+	var args []interface{}
+	if crimeType != "" {
+		query += " AND LOWER(cc.category_name) = LOWER($1)"
+		args = append(args, crimeType)
+	}
+
+	query += " GROUP BY time_period, cc.category_name ORDER BY time_period, cc.category_name"
+
+	rows, err := h.pool.Query(context.Background(), query, args...)
+	if err != nil {
+		log.Printf("Error querying crime trends: %v", err)
+		return make(map[string]map[string]int), err
+	}
+	defer rows.Close()
+
+	trends := make(map[string]map[string]int)
+
+	for rows.Next() {
+		var timePeriod, crimeTypeResult string
+		var count int
+
+		if err := rows.Scan(&timePeriod, &crimeTypeResult, &count); err != nil {
+			continue
+		}
+
+		if trends[timePeriod] == nil {
+			trends[timePeriod] = make(map[string]int)
+		}
+		trends[timePeriod][crimeTypeResult] = count
+		trends[timePeriod]["total"] += count
+	}
+
+	return trends, nil
+}
+
+func (h *Handler) GetDangerousAreas(c *gin.Context) {
+	year := validateYear(c.Query("year"))
+	includeDetails := c.DefaultQuery("include_details", "false") == "true"
+	limitStr := c.Query("limit")
+
+	limit := 20
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 100 {
+			limit = l
+		}
+	}
+
+	areaStats, err := h.getAreaStatistics(year, includeDetails, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to retrieve area statistics",
+		})
+		return
+	}
+
+	sort.Slice(areaStats, func(i, j int) bool {
+		return areaStats[i].Count > areaStats[j].Count
+	})
+
+	mostDangerous := "No data available"
+	safest := "No data available"
+	if len(areaStats) > 0 {
+		mostDangerous = areaStats[0].Area
+		// Find the safest area with crimes > 0
+		for i := len(areaStats) - 1; i >= 0; i-- {
+			if areaStats[i].Count > 0 {
+				safest = areaStats[i].Area
+				break
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"areas":           areaStats,
+		"most_dangerous":  mostDangerous,
+		"safest":          safest,
+		"total_areas":     len(areaStats),
+		"year":            year,
+		"include_details": includeDetails,
+	})
+}
+
+func (h *Handler) getAreaStatistics(year string, includeDetails bool, limit int) ([]CrimesByArea, error) {
+	statsQuery := `
+		SELECT 
+			COALESCE(n.neighborhood_name, 'Unknown Area') as area_name,
+			COUNT(*) as crime_count
+		FROM crime_incidents_` + year + ` ci
+		JOIN addresses a ON ci.address_id = a.address_id
+		LEFT JOIN neighborhoods n ON a.neighborhood_id = n.neighborhood_id
+		GROUP BY n.neighborhood_name
+		HAVING COUNT(*) > 0
+		ORDER BY crime_count DESC
+		LIMIT $1
+	`
+
+	rows, err := h.pool.Query(context.Background(), statsQuery, limit)
+	if err != nil {
+		log.Printf("Error querying area statistics: %v", err)
+		return []CrimesByArea{}, err
+	}
+	defer rows.Close()
+
+	var areaStats []CrimesByArea
+
+	for rows.Next() {
+		var area CrimesByArea
+
+		err := rows.Scan(&area.Area, &area.Count)
+		if err != nil {
+			log.Printf("Error scanning area stats: %v", err)
+			continue
+		}
+
+		if includeDetails {
+			crimes, err := h.getCrimesForNeighborhood(area.Area, year, 10)
+			if err != nil {
+				log.Printf("Error getting crimes for area %s: %v", area.Area, err)
+				continue
+			}
+			area.Crimes = crimes
+		}
+
+		areaStats = append(areaStats, area)
+	}
+
+	return areaStats, nil
+}
+
+// Gets crimes for certain neighborhood
+func (h *Handler) getCrimesForNeighborhood(neighborhood, year string, limit int) ([]Crime, error) {
+	query := `
+		SELECT 
+			ci.incident_date::text, 
 			COALESCE(ci.incident_time, '00:00') as incident_time,
 			COALESCE(l.latitude, 47.2529) as latitude,
-			COALESCE(l.longitude, -122.4443) as longitude
-		FROM crime_incidents_2024 ci
-		LEFT JOIN locations l ON ci.location_id = l.location_id
-		ORDER BY ci.incident_id DESC
-		LIMIT 200
+			COALESCE(l.longitude, -122.4443) as longitude,
+			COALESCE(a.street_address, 'Unknown Address') as address,
+			COALESCE(cc.category_name, 'Other') as crime_type
+		FROM crime_incidents_` + year + ` ci
+		JOIN addresses a ON ci.address_id = a.address_id
+		LEFT JOIN neighborhoods n ON a.neighborhood_id = n.neighborhood_id
+		LEFT JOIN locations l ON a.location_id = l.location_id
+		LEFT JOIN crime_categories cc ON ci.crime_category_id = cc.crime_category_id
+		WHERE COALESCE(n.neighborhood_name, 'Unknown Area') = $1
+		ORDER BY ci.incident_date DESC
+		LIMIT $2
 	`
-	
-	rows, err := h.pool.Query(context.Background(), query)
+
+	rows, err := h.pool.Query(context.Background(), query, neighborhood, limit)
 	if err != nil {
-		log.Printf("Error querying crimes with coordinates: %v", err)
-		return h.getAllMockCrimes()
+		log.Printf("Error querying crimes for area %s: %v", neighborhood, err)
+		return []Crime{}, err
 	}
 	defer rows.Close()
 
 	var crimes []Crime
 	for rows.Next() {
 		var crime Crime
-		var addressID, categoryID int
-		var incidentTime string
-		var latitude, longitude float64
-		
 		err := rows.Scan(
-			&crime.IncidentID,
-			&addressID,
-			&categoryID,
 			&crime.Date,
-			&incidentTime,
-			&latitude,    // Real latitude from locations table
-			&longitude,   // Real longitude from locations table
+			&crime.Time,
+			&crime.Latitude,
+			&crime.Longitude,
+			&crime.Address,
+			&crime.CrimeType,
 		)
-		
 		if err != nil {
-			log.Printf("Error scanning crime row: %v", err)
+			log.Printf("Error scanning crime: %v", err)
 			continue
 		}
-
-		crime.Time = incidentTime
-		crime.Latitude = latitude    // Real coordinates!
-		crime.Longitude = longitude  // Real coordinates!
-		crime.Address = fmt.Sprintf("Address ID: %d", addressID)
-		crime.CrimeType = mapCategoryIDToName(categoryID)
-
 		crimes = append(crimes, crime)
 	}
 
-	if len(crimes) == 0 {
-		log.Println("No crimes found in database, using mock data")
-		return h.getAllMockCrimes()
-	}
-
-	log.Printf("Successfully loaded %d real crimes with coordinates from database", len(crimes))
-	return crimes
-}
-
-// Map crime category IDs to readable names
-func mapCategoryIDToName(categoryID int) string {
-	categoryMap := map[int]string{
-		1:  "Theft",
-		2:  "Burglary", 
-		3:  "Assault",
-		4:  "Vandalism",
-		5:  "Drug Offense",
-		6:  "Robbery",
-		7:  "Domestic Violence",
-		8:  "Fraud",
-		9:  "Vehicle Theft",
-		10: "Weapons Violation",
-	}
-	
-	if name, exists := categoryMap[categoryID]; exists {
-		return name
-	}
-	return "Other"
+	return crimes, nil
 }
 
 // Backup mock data function
 func (h *Handler) getAllMockCrimes() []Crime {
 	return []Crime{
-		{IncidentID: 1, Address: "123 Main St, Tacoma, WA", Latitude: 47.2529, Longitude: -122.4443, CrimeType: "Theft", Date: "2024-08-10", Time: "14:30"},
-		{IncidentID: 2, Address: "456 Pacific Ave, Tacoma, WA", Latitude: 47.2563, Longitude: -122.4590, CrimeType: "Burglary", Date: "2024-08-11", Time: "22:15"},
-		{IncidentID: 3, Address: "789 Commerce St, Tacoma, WA", Latitude: 47.2528, Longitude: -122.4594, CrimeType: "Assault", Date: "2024-08-12", Time: "18:45"},
-		{IncidentID: 4, Address: "321 6th Ave, Tacoma, WA", Latitude: 47.2545, Longitude: -122.4580, CrimeType: "Vandalism", Date: "2024-08-09", Time: "03:20"},
-		{IncidentID: 5, Address: "654 Market St, Tacoma, WA", Latitude: 47.2510, Longitude: -122.4520, CrimeType: "Drug Offense", Date: "2024-08-08", Time: "16:10"},
+		{Address: "123 Main St, Tacoma, WA", Latitude: 47.2529, Longitude: -122.4443, CrimeType: "Theft", Date: "2024-08-10", Time: "14:30"},
+		{Address: "456 Pacific Ave, Tacoma, WA", Latitude: 47.2563, Longitude: -122.4590, CrimeType: "Burglary", Date: "2024-08-11", Time: "22:15"},
+		{Address: "789 Commerce St, Tacoma, WA", Latitude: 47.2528, Longitude: -122.4594, CrimeType: "Assault", Date: "2024-08-12", Time: "18:45"},
+		{Address: "321 6th Ave, Tacoma, WA", Latitude: 47.2545, Longitude: -122.4580, CrimeType: "Vandalism", Date: "2024-08-09", Time: "03:20"},
+		{Address: "654 Market St, Tacoma, WA", Latitude: 47.2510, Longitude: -122.4520, CrimeType: "Drug Offense", Date: "2024-08-08", Time: "16:10"},
 	}
 }

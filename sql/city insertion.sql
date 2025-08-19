@@ -175,3 +175,18 @@ FROM state_query s
          CROSS JOIN county_insert c
          CROSS JOIN (VALUES ('Mill Creek', 20742, 4.691, 1983))
     AS city_data(city_name, population, area_sq_mi, founded_year);
+
+
+WITH city_query AS (SELECT city_id
+                    FROM cities
+                    WHERE city_name = 'Tacoma')
+INSERT
+INTO neighborhoods (neighborhood_name)
+SELECT data.neighborhood_name,
+       s.city_id
+FROM city_query s
+         CROSS JOIN(VALUES ('South End'))
+    AS data(neighborhood_name)
+ON CONFLICT (neighborhood_name, city_id) DO NOTHING
+RETURNING neighborhood_id;
+

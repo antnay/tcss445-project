@@ -92,6 +92,7 @@ func insert(p *pgxpool.Pool, c *maps.Client, record []string) {
 	time := record[6]
 	neighborhood := record[8]
 
+	// TODO:
 	// if redacted continue
 	// regex to filter out xxxx block of ...
 	// reorganize categories
@@ -131,6 +132,10 @@ func insert(p *pgxpool.Pool, c *maps.Client, record []string) {
 		return
 	}
 
+	tx, err := p.Begin(context.Background())
+	if err != nil {
+		log.Fatalf("Could not start db transaction: %s", err)
+	}
 	sql := `SELECT *
 		FROM add_crime_incident_partition(p_city_name := $1,
 	                              p_state_name := $2,
@@ -146,13 +151,15 @@ func insert(p *pgxpool.Pool, c *maps.Client, record []string) {
 	                              p_incident_time := $11::time,
 	                              p_case_num := $12)`
 
-	_, err = p.Exec(context.Background(), sql,
+	_, err = tx.Exec(context.Background(), sql,
 		"Tacoma", "Washington", "United States", "City of Tacoma Reported Crime (Tacoma)",
 		lat, lon, address, zip, category, date, time, caseno, neighborhood)
 
 	if err != nil {
-		log.Printf("errr: %s", err)
+		log.Printf("errr rolling back! %s", err)
+		tx.Rollback(context.Background())
 	}
+	tx.Commit(context.Background())
 
 }
 
@@ -200,7 +207,7 @@ func addNeighborhood(p *pgxpool.Pool, c *maps.Client) {
 			curr := comp[i]
 			// log.Println(curr.Types)
 			if curr.Types[0] == "neighborhood" {
-				neighborhood = curr.LongName
+				// neighborhood = curr.LongName
 				log.Println(curr.LongName)
 				good = true
 			}
@@ -211,9 +218,9 @@ func addNeighborhood(p *pgxpool.Pool, c *maps.Client) {
 
 		continue
 
-		sql = `
-		select neighborhood_id from neighborhoods where neighborhood_name = $1
-		`
+		// sql = `
+		// select neighborhood_id from neighborhoods where neighborhood_name = $1
+		// `
 		var neighborhoodId int
 		p.QueryRow(context.Background(), sql, neighborhood).Scan(&neighborhoodId)
 

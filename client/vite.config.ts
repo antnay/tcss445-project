@@ -1,29 +1,39 @@
-import { reactRouter } from "@react-router/dev/vite";
-import tailwindcss from "@tailwindcss/vite";
-import { defineConfig } from "vite";
-import tsconfigPaths from "vite-tsconfig-paths";
+import tailwindcss from '@tailwindcss/vite';
+import { sveltekit } from '@sveltejs/kit/vite';
+import { defineConfig } from 'vite';
 
 export default defineConfig({
-  plugins: [tailwindcss(), reactRouter(), tsconfigPaths()],
-  server: {
-    host: true,
-    port: 5173,
-    // proxy: {
-    //   '/api': {
-    //     target: 'http://server:4000',
-    //     changeOrigin: true,
-    //     secure: false,
-    //   }
-    // }
-    proxy: {
-      '/api': {
-        target: process.env.VITE_API_URL ||
-          (process.env.NODE_ENV === 'development'
-            ? `http://localhost:${process.env.SERVER_PORT || 4000}`  // Local development
-            : `http://server:${process.env.SERVER_PORT || 4000}`),   // Docker
-        changeOrigin: true,
-        secure: false,
-      }
-    }
-  }
+	plugins: [tailwindcss(), sveltekit()],
+	server: {
+		host: '0.0.0.0',
+		port: 5173,
+		watch: {
+			usePolling: true,
+			interval: 1000,
+		},
+		hmr: {
+			port: 5173,
+			host: 'localhost'
+		},
+		proxy: {
+			'/api': {
+				// target: process.env.PUBLIC_API_URL as string || 'http://localhost:4000',
+				target: 'http://server:4000',
+				changeOrigin: true,
+				secure: false,
+				configure: (proxy, options) => {
+					proxy.on('error', (err, req, res) => {
+						console.log('proxy error', err);
+					});
+					proxy.on('proxyReq', (proxyReq, req, res) => {
+						console.log('Sending Request to the Target:', req.method, req.url);
+					});
+					proxy.on('proxyRes', (proxyRes, req, res) => {
+						console.log('Received Response from the Target:', proxyRes.statusCode, req.url);
+					});
+				}
+			}
+		}
+
+	}
 });
