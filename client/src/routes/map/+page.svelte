@@ -293,19 +293,13 @@
 	{:else}
 		<div class="mb-4">
 			<h2 class="text-xl font-bold">Tacoma Crime Map</h2>
-			<p class="text-gray-600">{totalCount} total crimes</p>
-			<div class="flex gap-4 text-sm text-gray-500">
-				<span>Zoom: {currentZoom}</span>
-				<span>Markers: {markers.length}</span>
-			</div>
+			<!-- <p class="text-gray-600">{totalCount} total crimes</p> --> 
+			<!-- <div class="flex gap-4 text-sm text-gray-500"> -->
+				<!-- <span>Zoom: {currentZoom}</span> -->
+				<!-- <span>Markers: {markers.length}</span> -->
+			<!-- </div> -->
 		</div>
 	{/if}
 	
 	<div bind:this={mElement} class="h-170 w-full rounded bg-gray-200 shadow-lg"></div>
-	
-	{#if !loading && !error && totalCount > 0}
-		<div class="mt-4 text-sm text-gray-600">
-			<p>Markers are grouped by location and limited by zoom level for optimal performance.</p>
-		</div>
-	{/if}
 </div>
