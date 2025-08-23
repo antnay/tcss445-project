@@ -12,6 +12,11 @@ export interface CrimesResponse {
     count: number;
 }
 
+export interface CrimesDumpResponse {
+    crimes: CrimeData[];
+    count: number;
+}
+
 export type Neighborhood =
     | 'Eastside'
     | 'New Tacoma'
@@ -52,4 +57,41 @@ export interface StrictCrime {
 export interface StrictCrimesResponse {
     crimes: StrictCrime[];
     count: number;
+}
+
+export interface AreaStats {
+    area: string;
+    count: number;
+    crimes: null;
+}
+
+export interface AreasResponse {
+    areas: AreaStats[];
+    most_dangerous: string;
+    safest: string;
+    total_areas: number;
+    year: string;
+}
+
+export interface CrimeStats {
+    total_crimes: number;
+    crimes_by_type: Record<string, number>;
+    crimes_by_date: Record<string, number>;
+    crimes_by_hour: Record<string, number>;
+    most_dangerous_areas: string[];
+    safest_areas: string[];
+}
+
+export interface CrimeData {
+    case: string;
+    crimeCategory: string;
+    neighborhood: string | null;
+    street: string;
+    city: string;
+    zip: string;
+    latitude: string;
+    longitude: string;
+    date: string;
+    time: string;
+    source: string;
 }

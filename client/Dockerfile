@@ -2,7 +2,7 @@ FROM node:23-alpine
 
 WORKDIR /svelte-app
 
-COPY client/package.json client/package-lock.json ./
+COPY client/package.json client/package-lock.json client/tailwind.config.cjs ./
 
 RUN npm ci
 

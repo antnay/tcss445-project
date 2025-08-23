@@ -121,6 +121,7 @@
 			--fraud-offenses: oklch(#00cc88);
 			--drug-narcotics-violations: oklch(#cc8800);
       --robbery: oklch(#cc0044);
+      --fun: oklch(#da59c7);
 }
 
 @layer base {
